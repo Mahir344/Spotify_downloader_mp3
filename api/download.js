@@ -1,14 +1,42 @@
 const axios = require('axios');
 
 module.exports = async (req, res) => {
-    // Enable CORS
+    // CORS Header
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') return res.status(200).end();
 
-    // 1. Clean Track ID Extraction
+    // 1. Check if this request is a DIRECT DOWNLOAD TRIGGER
+    const streamSource = req.query.stream_source;
+    const downloadFileName = req.query.filename || 'music.mp3';
+
+    if (streamSource) {
+        try {
+            // Fetch audio stream from external CDN
+            const audioStream = await axios({
+                method: 'get',
+                url: streamSource,
+                responseType: 'stream',
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                }
+            });
+
+            // Force Chrome to download file directly
+            res.setHeader('Content-Type', 'audio/mpeg');
+            res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(downloadFileName)}"`);
+            
+            // Pipe audio stream directly to browser response
+            return audioStream.data.pipe(res);
+        } catch (e) {
+            // If proxy stream fails, fallback to direct redirect
+            return res.redirect(streamSource);
+        }
+    }
+
+    // 2. Normal API Request (Extract Spotify Metadata)
     let input = req.query.id || req.query.url;
     if (!input) {
         return res.status(400).json({ 
@@ -29,19 +57,19 @@ module.exports = async (req, res) => {
     const spotifyFullUrl = `https://open.spotify.com/track/${trackId}`;
 
     try {
-        // 2. Fetch Track Metadata via Spotify oEmbed
+        // Fetch Spotify Metadata
         const oembedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(spotifyFullUrl)}`;
         const oembedRes = await axios.get(oembedUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            headers: { 'User-Agent': 'Mozilla/5.0' },
             timeout: 6000
         });
 
         const title = oembedRes.data.title || "goosebumps";
         const coverImage = oembedRes.data.thumbnail_url || null;
 
-        // 3. Search Matching YouTube Video ID via Rapid Public Endpoint
+        // Extract Video ID
         const searchQuery = encodeURIComponent(`${title} Audio`);
-        let videoId = "Dst9gZkq1a8"; // Default fallback ID for goosebumps
+        let videoId = "Dst9gZkq1a8";
 
         try {
             const searchRes = await axios.get(`https://ytdl.prod.ripply.top/search?q=${searchQuery}`, { timeout: 4000 });
@@ -49,12 +77,19 @@ module.exports = async (req, res) => {
                 videoId = searchRes.data[0].id;
             }
         } catch (e) {
-            // Keep default video ID if search API times out
+            // Keep fallback ID
         }
 
-        const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        const rawAudioSource = `https://yt.drgn.in/download?id=${videoId}&type=audio`;
+        const fileName = `${title.replace(/[^a-zA-Z0-9\s]/g, "")}.mp3`;
+        
+        // Host Domain Protocol logic
+        const host = req.headers.host;
+        const protocol = req.headers['x-forwarded-proto'] || 'https';
+        
+        // Direct Download Trigger Link (Your API itself handles Chrome Force Download)
+        const directDownloadUrl = `${protocol}://${host}/api/download?stream_source=${encodeURIComponent(rawAudioSource)}&filename=${encodeURIComponent(fileName)}`;
 
-        // 4. Stable Audio Download APIs
         return res.status(200).json({
             status: 'success',
             metadata: {
@@ -63,26 +98,16 @@ module.exports = async (req, res) => {
                 cover_image: coverImage,
                 spotify_url: spotifyFullUrl
             },
-            youtube_match: {
-                video_id: videoId,
-                youtube_url: ytUrl
-            },
             download_sources: {
-                // Direct Converter Endpoint (Works directly in Kiwi/Chrome)
-                direct_download: `https://yt.drgn.in/download?id=${videoId}&type=audio`,
-                
-                // Backup Web Player Button
-                web_download: `https://cobalt.tools/#${encodeURIComponent(ytUrl)}`,
-                
-                // Direct MP3 Stream Redirect Engine
-                mp3_stream: `https://api.vkrdown.com/api/download?url=${encodeURIComponent(ytUrl)}`
+                // 🚀 THIS LINK WILL INSTANTLY START DOWNLOAD IN CHROME
+                direct_chrome_download: directDownloadUrl
             }
         });
 
     } catch (err) {
         return res.status(500).json({
             status: 'error',
-            message: 'Failed to process track. Verify your Spotify URL.',
+            message: 'Failed to process request.',
             error_details: err.message
         });
     }
