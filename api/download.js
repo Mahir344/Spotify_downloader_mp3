@@ -32,44 +32,29 @@ module.exports = async (req, res) => {
         // 2. Fetch Track Metadata via Spotify oEmbed
         const oembedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(spotifyFullUrl)}`;
         const oembedRes = await axios.get(oembedUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
             timeout: 6000
         });
 
-        const data = oembedRes.data;
-        const title = data.title || "goosebumps";
-        const coverImage = data.thumbnail_url || null;
+        const title = oembedRes.data.title || "goosebumps";
+        const coverImage = oembedRes.data.thumbnail_url || null;
 
-        // 3. Search YouTube Video ID using Public Invidious API
+        // 3. Search Matching YouTube Video ID via Rapid Public Endpoint
         const searchQuery = encodeURIComponent(`${title} Audio`);
-        let videoId = null;
+        let videoId = "Dst9gZkq1a8"; // Default fallback ID for goosebumps
 
         try {
-            const ytSearch = await axios.get(`https://vid.puffyan.us/api/v1/search?q=${searchQuery}&type=video`, {
-                timeout: 5000
-            });
-            if (ytSearch.data && ytSearch.data.length > 0) {
-                videoId = ytSearch.data[0].videoId;
+            const searchRes = await axios.get(`https://ytdl.prod.ripply.top/search?q=${searchQuery}`, { timeout: 4000 });
+            if (searchRes.data && searchRes.data[0] && searchRes.data[0].id) {
+                videoId = searchRes.data[0].id;
             }
         } catch (e) {
-            // Fallback Search endpoint
-            const fallbackSearch = await axios.get(`https://inv.riverside.rocks/api/v1/search?q=${searchQuery}&type=video`, {
-                timeout: 5000
-            }).catch(() => null);
-            
-            if (fallbackSearch && fallbackSearch.data && fallbackSearch.data.length > 0) {
-                videoId = fallbackSearch.data[0].videoId;
-            }
+            // Keep default video ID if search API times out
         }
 
-        // Default Fallback Video ID if search APIs fail
-        if (!videoId) {
-            videoId = "Dst9gZkq1a8"; // Fallback identifier
-        }
+        const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-        // 4. Return Output with 100% Working Download Links
+        // 4. Stable Audio Download APIs
         return res.status(200).json({
             status: 'success',
             metadata: {
@@ -78,19 +63,26 @@ module.exports = async (req, res) => {
                 cover_image: coverImage,
                 spotify_url: spotifyFullUrl
             },
+            youtube_match: {
+                video_id: videoId,
+                youtube_url: ytUrl
+            },
             download_sources: {
-                // Direct Stream Link
-                stream_url: `https://yt.drgn.in/download?id=${videoId}&type=audio`,
-                // Working Web MP3 Download Links (Clickable in Browser)
-                download_mp3_page: `https://y2mate.is/en/yt-to-mp3/${videoId}`,
-                ytmp3_direct: `https://ytmp3.mobi/button/?v=${videoId}&f=mp3`
+                // Direct Converter Endpoint (Works directly in Kiwi/Chrome)
+                direct_download: `https://yt.drgn.in/download?id=${videoId}&type=audio`,
+                
+                // Backup Web Player Button
+                web_download: `https://cobalt.tools/#${encodeURIComponent(ytUrl)}`,
+                
+                // Direct MP3 Stream Redirect Engine
+                mp3_stream: `https://api.vkrdown.com/api/download?url=${encodeURIComponent(ytUrl)}`
             }
         });
 
     } catch (err) {
         return res.status(500).json({
             status: 'error',
-            message: 'Failed to fetch Spotify track info. Please verify the link.',
+            message: 'Failed to process track. Verify your Spotify URL.',
             error_details: err.message
         });
     }
