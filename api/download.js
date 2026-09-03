@@ -1,82 +1,86 @@
 const axios = require('axios');
-const yts = require('yt-search');
 
 module.exports = async (req, res) => {
-    // CORS Headers Enable
+    // CORS Enable
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') return res.status(200).end();
 
-    // 1. Spotify URL / Track ID Extraction
+    // 1. Extract and Clean Track ID
     let input = req.query.id || req.query.url;
     if (!input) {
         return res.status(400).json({ 
             status: 'error', 
-            message: 'Spotify Track ID or URL is required. Example: ?id=4cOdK2wGLETKBW3PvgPWqT' 
+            message: 'Spotify Track ID or URL is required.' 
         });
     }
 
     let trackId = input;
-    if (input.includes('/track/')) {
-        trackId = input.split('/track/')[1].split('?')[0];
+    const match = input.match(/track\/([a-zA-Z0-9]{22})/);
+    if (match && match[1]) {
+        trackId = match[1];
+    } else if (input.includes('?')) {
+        trackId = input.split('?')[0];
     }
 
+    // Clean Track ID check (Spotify IDs are exactly 22 alphanumeric chars)
+    trackId = trackId.trim();
     const spotifyFullUrl = `https://open.spotify.com/track/${trackId}`;
 
     try {
-        // 2. Fetch Metadata using Official Spotify oEmbed Endpoint (100% Stable)
+        // 2. Fetch Track Metadata via Spotify oEmbed Endpoint
         const oembedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(spotifyFullUrl)}`;
         const oembedRes = await axios.get(oembedUrl, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-            }
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'application/json'
+            },
+            timeout: 8000 // 8 second timeout safeguard
         });
 
         const data = oembedRes.data;
-
-        // Extract Title and Artist from oEmbed response
-        const title = data.title || "Unknown Track";
+        const fullTitle = data.title || "Unknown Track";
         const coverImage = data.thumbnail_url || null;
 
-        if (!title) {
-            return res.status(404).json({ status: 'error', message: 'Could not fetch track metadata.' });
+        // 3. Search Matching Audio Source via Invidious / Public Search Proxy
+        const searchQuery = encodeURIComponent(`${fullTitle} Audio`);
+        const searchRes = await axios.get(`https://api.vkrdown.com/api/search?q=${searchQuery}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 8000
+        }).catch(() => null);
+
+        let videoId = null;
+        if (searchRes && searchRes.data && searchRes.data.data && searchRes.data.data.length > 0) {
+            videoId = searchRes.data.data[0].id || searchRes.data.data[0].videoId;
         }
 
-        // 3. Search Matching Audio Stream via YouTube
-        const searchQuery = `${title} Audio`;
-        const ytResults = await yts(searchQuery);
-        const topVideo = ytResults.videos[0];
+        // Fallback search mechanism if search API fails
+        const fallbackSearchUrl = `https://www.youtube.com/results?search_query=${searchQuery}`;
 
-        if (!topVideo) {
-            return res.status(404).json({ status: 'error', message: 'No matching audio source found on YouTube.' });
-        }
-
-        // 4. Output Clean & Working Response
+        // 4. Send Success Response
         return res.status(200).json({
             status: 'success',
             metadata: {
                 id: trackId,
-                title: title,
+                title: fullTitle,
                 cover_image: coverImage,
-                duration: topVideo.timestamp,
                 spotify_url: spotifyFullUrl
             },
-            youtube_match: {
-                title: topVideo.title,
-                url: topVideo.url
-            },
             download_sources: {
-                stream_url: `https://yt.drgn.in/download?id=${topVideo.videoId}&type=audio`,
-                direct_mp3_api: `https://api.vevioz.com/api/button/mp3/${topVideo.videoId}`
+                stream_url: videoId ? `https://yt.drgn.in/download?id=${videoId}&type=audio` : null,
+                direct_mp3_api: videoId ? `https://api.vevioz.com/api/button/mp3/${videoId}` : `https://api.vevioz.com/api/button/mp3/search?q=${searchQuery}`,
+                cobalt_api: "https://api.cobalt.tools/api/json"
             }
         });
 
     } catch (err) {
         return res.status(500).json({
             status: 'error',
-            message: err.message || 'Failed to fetch track details. Ensure the Spotify track link is valid.'
+            message: 'Failed to fetch Spotify track. Check if the ID is correct.',
+            provided_id: trackId,
+            error_details: err.message
         });
     }
 };
